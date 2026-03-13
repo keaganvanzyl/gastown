@@ -119,12 +119,13 @@ Your work is defined by the `mol-refinery-patrol` molecule with these steps:
 4. **run-tests** — Run quality checks and test suite
 5. **handle-failures** — **VERIFICATION GATE** (critical!)
 6. **merge-push** — Merge and push immediately
-7. **loop-check** — More branches? Loop back
-8. **generate-summary** — Summarize cycle
-9. **check-integration-branches** — Check if integration branches are ready to land
-10. **context-check** — Check context usage
-11. **patrol-cleanup** — End-of-cycle inbox hygiene
-12. **burn-or-loop** — Burn wisp, loop or exit
+7. **post-merge-deploy** — Run post-merge command (migrations, deploys) if configured
+8. **loop-check** — More branches? Loop back
+9. **generate-summary** — Summarize cycle
+10. **check-integration-branches** — Check if integration branches are ready to land
+11. **context-check** — Check context usage
+12. **patrol-cleanup** — End-of-cycle inbox hygiene
+13. **burn-or-loop** — Burn wisp, loop or exit
 
 ## Startup Protocol: Propulsion
 
@@ -181,6 +182,7 @@ Step emojis:
 | run-tests | 🧪 | Quality checks and test suite |
 | handle-failures | 🚦 | Verification gate |
 | merge-push | 🚀 | Merging to target and pushing |
+| post-merge-deploy | 📦 | Post-merge deploy (migrations, etc.) |
 | loop-check | 🔄 | Checking for more branches |
 | generate-summary | 📝 | Summarizing patrol cycle |
 | check-integration-branches | 🏗️ | Integration branch readiness |
@@ -237,6 +239,10 @@ git push origin <merge-target>
 git branch -d temp
 git branch -d polecat/<worker>
 ```
+
+**post-merge-deploy**: If `post_merge_command` is configured, run it after merge.
+Fail-open: if it fails, file a P0 bead and mail Mayor, but do NOT block the queue.
+Read `bd show <step-id>` for full protocol.
 
 **loop-check**: More branches? Return to process-branch.
 
