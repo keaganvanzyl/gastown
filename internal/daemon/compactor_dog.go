@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/gastown/internal/constants"
-	"github.com/steveyegge/gastown/internal/reaper"
+	"github.com/steveyegge/gastown/internal/doltserver"
 )
 
 const (
@@ -192,7 +192,7 @@ func (d *Daemon) runCompactorDog() {
 }
 
 // compactorDatabases returns the list of databases to consider for compaction.
-// Checks its own config first, falls back to wisp_reaper config, then auto-discovery.
+// Checks its own config first, falls back to wisp_reaper config, then dynamic discovery.
 func (d *Daemon) compactorDatabases() []string {
 	if d.patrolConfig != nil && d.patrolConfig.Patrols != nil {
 		if cd := d.patrolConfig.Patrols.CompactorDog; cd != nil {
@@ -206,7 +206,12 @@ func (d *Daemon) compactorDatabases() []string {
 			}
 		}
 	}
-	return reaper.DefaultDatabases
+	databases, err := doltserver.DiscoverProductionDatabases("127.0.0.1", d.doltServerPort())
+	if err != nil {
+		d.logger.Printf("compactor_dog: database discovery failed: %v", err)
+		return nil
+	}
+	return databases
 }
 
 // compactorCountCommits counts the number of commits in the database's dolt_log.

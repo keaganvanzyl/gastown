@@ -29,17 +29,6 @@ func TestValidateDBName(t *testing.T) {
 	}
 }
 
-func TestDefaultDatabases(t *testing.T) {
-	if len(DefaultDatabases) == 0 {
-		t.Error("DefaultDatabases should not be empty")
-	}
-	for _, db := range DefaultDatabases {
-		if err := ValidateDBName(db); err != nil {
-			t.Errorf("DefaultDatabases contains invalid name %q: %v", db, err)
-		}
-	}
-}
-
 func TestFormatJSON(t *testing.T) {
 	result := FormatJSON(map[string]int{"count": 42})
 	if result == "" {

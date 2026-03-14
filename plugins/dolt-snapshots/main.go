@@ -156,7 +156,10 @@ func listDatabases(db *sql.DB) ([]string, error) {
 		if err := rows.Scan(&name); err != nil {
 			return nil, err
 		}
-		// Skip system databases and test pollution
+		// Skip system databases and test pollution.
+		// Filter logic mirrors doltserver.IsProductionDatabase (centralized in
+		// internal/doltserver/doltserver.go). This plugin has its own go.mod so
+		// it can't import the main module directly.
 		if isSystemDB(name) {
 			continue
 		}
@@ -165,13 +168,17 @@ func listDatabases(db *sql.DB) ([]string, error) {
 	return databases, rows.Err()
 }
 
+// isSystemDB returns true for system databases and test pollution.
+// Mirrors doltserver.IsProductionDatabase (inverted) — kept in sync manually
+// because this plugin has a separate go.mod.
 func isSystemDB(name string) bool {
 	switch name {
 	case "information_schema", "mysql", "dolt_cluster":
 		return true
 	}
+	lower := strings.ToLower(name)
 	for _, prefix := range []string{"testdb_", "beads_t", "beads_pt", "doctest_"} {
-		if strings.HasPrefix(name, prefix) {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}
