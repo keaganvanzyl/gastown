@@ -24,7 +24,7 @@ DOLT_PORT="${DOLT_PORT:-3307}"
 DOLT_USER="${DOLT_USER:-root}"
 COMMIT_THRESHOLD="${COMMIT_THRESHOLD:-500}"
 # Default production databases (matches reaper.DefaultDatabases)
-DEFAULT_DBS="hq,bd,gt"
+DEFAULT_DBS="auto"
 DRY_RUN=false
 CHECK_ONLY=false
 LOGFILE=""
@@ -80,7 +80,7 @@ validate_name() {
 validate_hash() {
   local hash="$1"
   local context="$2"
-  if [[ ! "$hash" =~ ^[a-fA-F0-9]+$ ]]; then
+  if [[ ! "$hash" =~ ^[a-zA-Z0-9]+$ ]]; then
     log "ERROR: Unsafe $context hash rejected: '$hash'"
     return 1
   fi
@@ -120,7 +120,7 @@ log "Starting compaction cycle (threshold=$COMMIT_THRESHOLD, dry_run=$DRY_RUN, c
 # If databases were explicitly provided, use those. Otherwise, auto-discover
 # from the server and filter out system/test databases.
 if [[ "$DEFAULT_DBS" == "auto" ]]; then
-  ALL_DBS=$(dolt_query "" "SHOW DATABASES" | grep -v -E '^(information_schema|mysql|dolt_cluster|testdb_|beads_t|beads_pt|doctest_)$')
+  ALL_DBS=$(dolt_query "" "SHOW DATABASES" | grep -v -E '^(information_schema|mysql|dolt|dolt_cluster|testdb_|beads_t|beads_pt|doctest_)$')
   if [[ -z "$ALL_DBS" ]]; then
     log "ERROR: No production databases found (is Dolt running on $DOLT_HOST:$DOLT_PORT?)"
     gt escalate "compactor-dog: no databases found" -s MEDIUM \
