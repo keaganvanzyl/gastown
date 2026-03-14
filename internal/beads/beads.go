@@ -18,6 +18,13 @@ import (
 	"github.com/steveyegge/gastown/internal/telemetry"
 )
 
+// DefaultBdTimeout is the maximum time a bd command may run before being killed.
+// This prevents indefinite hangs when Dolt is unreachable (e.g., after daemon restart).
+const DefaultBdTimeout = 30 * time.Second
+
+// LongBdTimeout is used for operations that legitimately take longer (sync, push, pull).
+const LongBdTimeout = 120 * time.Second
+
 // Common errors
 // ZFC: Only define errors that don't require stderr parsing for decisions.
 // ErrNotARepo and ErrSyncConflict were removed - agents should handle these directly.
@@ -25,6 +32,7 @@ var (
 	ErrNotInstalled = errors.New("bd not installed: run 'pip install beads-cli' or see https://github.com/anthropics/beads")
 	ErrNotFound     = errors.New("issue not found")
 	ErrFlagTitle    = errors.New("title looks like a CLI flag (starts with '-'); use --title=\"...\" to set flag-like titles intentionally")
+	ErrTimeout      = errors.New("bd command timed out (Dolt may be unreachable)")
 )
 
 // bdAllowStale caches whether the installed bd supports --allow-stale.
@@ -393,12 +401,22 @@ func (b *Beads) Init(prefix string) error {
 
 // run executes a bd command and returns stdout.
 func (b *Beads) run(args ...string) (_ []byte, retErr error) {
+	return b.runWithTimeout(DefaultBdTimeout, args...)
+}
+
+// runWithTimeout executes a bd command with an explicit timeout.
+// Used by run() with the default timeout, and directly for long-running operations.
+func (b *Beads) runWithTimeout(timeout time.Duration, args ...string) (_ []byte, retErr error) {
 	start := time.Now()
 	// Declare buffers before defer so the closure captures them after cmd.Run.
 	var stdout, stderr bytes.Buffer
 	defer func() {
 		telemetry.RecordBDCall(context.Background(), args, float64(time.Since(start).Milliseconds()), retErr, stdout.Bytes(), stderr.String())
 	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	// bd v0.59+ requires --flat for --json to produce JSON output on "list" commands.
 	// Without --flat, bd list --json silently returns human-readable tree format,
 	// causing all JSON parsing to fail. Inject --flat before --allow-stale prepend
@@ -417,8 +435,12 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 	// Always explicitly set BEADS_DIR to prevent inherited env vars from
 	// causing prefix mismatches. Use explicit beadsDir if set, otherwise
 	// resolve from working directory.
-	cmd := exec.Command("bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+	cmd := exec.CommandContext(ctx, "bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 	cmd.Dir = b.workDir
+	// WaitDelay ensures pipe-copying goroutines are unblocked after context cancellation.
+	// Without this, child subprocesses (e.g., Dolt connections) can keep pipes open
+	// even after the parent bd process is killed, causing cmd.Wait to hang.
+	cmd.WaitDelay = 2 * time.Second
 
 	cmd.Env = runEnv
 	cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
@@ -431,7 +453,7 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 	// If bd doesn't support --flat, retry without it. The retry is done here
 	// (not in callers like List) so that InjectFlatForListJSON doesn't re-add
 	// --flat on the retry path.
-	if err != nil && strings.Contains(stderr.String(), "unknown flag: --flat") {
+	if err != nil && ctx.Err() == nil && strings.Contains(stderr.String(), "unknown flag: --flat") {
 		retryArgs := make([]string, 0, len(fullArgs))
 		for _, a := range fullArgs {
 			if a != "--flat" {
@@ -440,13 +462,19 @@ func (b *Beads) run(args ...string) (_ []byte, retErr error) {
 		}
 		stdout.Reset()
 		stderr.Reset()
-		cmd = exec.Command("bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+		cmd = exec.CommandContext(ctx, "bd", retryArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 		cmd.Dir = b.workDir
+		cmd.WaitDelay = 2 * time.Second
 		cmd.Env = runEnv
 		cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 		err = cmd.Run()
+	}
+
+	// Surface timeout as a specific error so callers can distinguish it
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("%w: bd %s (after %v)", ErrTimeout, strings.Join(args, " "), timeout)
 	}
 
 	if err != nil {
@@ -474,11 +502,16 @@ func (b *Beads) runWithRouting(args ...string) (_ []byte, retErr error) { //noli
 	defer func() {
 		telemetry.RecordBDCall(context.Background(), args, float64(time.Since(start).Milliseconds()), retErr, stdout.Bytes(), stderr.String())
 	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultBdTimeout)
+	defer cancel()
+
 	runEnv := b.buildRoutingEnv()
 	fullArgs := MaybePrependAllowStaleWithEnv(runEnv, args)
 
-	cmd := exec.Command("bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
+	cmd := exec.CommandContext(ctx, "bd", fullArgs...) //nolint:gosec // G204: bd is a trusted internal tool
 	cmd.Dir = b.workDir
+	cmd.WaitDelay = 2 * time.Second // Ensure pipes close after context cancellation
 
 	cmd.Env = runEnv
 	cmd.Env = append(cmd.Env, telemetry.OTELEnvForSubprocess()...)
@@ -487,6 +520,11 @@ func (b *Beads) runWithRouting(args ...string) (_ []byte, retErr error) { //noli
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("%w: bd %s (after %v)", ErrTimeout, strings.Join(args, " "), DefaultBdTimeout)
+	}
+
 	if err != nil {
 		return nil, b.wrapError(err, stderr.String(), args)
 	}
@@ -1427,13 +1465,13 @@ func (b *Beads) RemoveDependency(issue, dependsOn string) error {
 
 // Sync syncs beads with remote.
 func (b *Beads) Sync() error {
-	_, err := b.run("sync")
+	_, err := b.runWithTimeout(LongBdTimeout, "sync")
 	return err
 }
 
 // SyncFromMain syncs beads updates from main branch.
 func (b *Beads) SyncFromMain() error {
-	_, err := b.run("sync", "--from-main")
+	_, err := b.runWithTimeout(LongBdTimeout, "sync", "--from-main")
 	return err
 }
 

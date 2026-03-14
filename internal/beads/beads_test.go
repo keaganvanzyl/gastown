@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestNew verifies the constructor.
@@ -158,6 +159,56 @@ exit 1
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write bd stub: %v", err)
+	}
+}
+
+// TestRunWithTimeout_KillsSlowBd verifies that runWithTimeout kills a slow bd process.
+func TestRunWithTimeout_KillsSlowBd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sleep stub not portable to Windows")
+	}
+
+	// Create a bd stub that responds to --allow-stale version probe quickly
+	// but sleeps for any other command (simulating a hung Dolt connection).
+	stubDir := t.TempDir()
+	stubPath := filepath.Join(stubDir, "bd")
+	script := `#!/bin/sh
+# Respond to --allow-stale version probe quickly (used by BdSupportsAllowStaleWithEnv)
+if [ "$1" = "--allow-stale" ] && [ "$2" = "version" ]; then
+  exit 0
+fi
+# For everything else, sleep to simulate a hung Dolt connection
+sleep 60
+`
+	if err := os.WriteFile(stubPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write slow bd stub: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+origPath)
+	ResetBdAllowStaleCacheForTest()
+
+	workDir := t.TempDir()
+	// Create a minimal .beads dir so ResolveBeadsDir doesn't fail
+	beadsDir := filepath.Join(workDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	b := NewIsolated(workDir)
+
+	start := time.Now()
+	_, err := b.runWithTimeout(1*time.Second, "show", "test-123")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout error, got: %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("runWithTimeout took %v, expected ~1s timeout", elapsed)
 	}
 }
 

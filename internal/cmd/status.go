@@ -85,6 +85,7 @@ type ServiceInfo struct {
 // DoltInfo represents the Dolt server status.
 type DoltInfo struct {
 	Running       bool   `json:"running"`
+	Reachable     bool   `json:"reachable"`                // TCP dial succeeded (gs-lcv)
 	PID           int    `json:"pid,omitempty"`
 	Port          int    `json:"port"`
 	Remote        bool   `json:"remote,omitempty"`
@@ -691,53 +692,25 @@ func gatherStatus() (TownStatus, error) {
 		beadsMu.Unlock()
 	}
 
+	// Pre-flight Dolt health check: if Dolt is unreachable, skip all beads
+	// fetching to ensure gt status returns quickly. (gs-lcv)
+	doltReachable := doltserver.CheckServerReachable(townRoot) == nil
+
 	var beadsWg sync.WaitGroup
 
-	// Fetch town-level agent beads (Mayor, Deacon) from town beads
-	townBeadsPath := beads.GetTownBeadsPath(townRoot)
-	beadsWg.Add(1)
-	go func() {
-		defer beadsWg.Done()
-		townBeadsClient := beads.New(townBeadsPath)
-		townAgentBeads, _ := townBeadsClient.ListAgentBeads()
-		mergeAgentBeads(townAgentBeads)
-
-		// Fetch hook beads from town beads
-		var townHookIDs []string
-		for _, issue := range townAgentBeads {
-			hookID := issue.HookBead
-			if hookID == "" {
-				fields := beads.ParseAgentFields(issue.Description)
-				if fields != nil {
-					hookID = fields.HookBead
-				}
-			}
-			if hookID != "" {
-				townHookIDs = append(townHookIDs, hookID)
-			}
-		}
-		if len(townHookIDs) > 0 {
-			townHookBeads, _ := townBeadsClient.ShowMultiple(townHookIDs)
-			mergeHookBeads(townHookBeads)
-		}
-	}()
-
-	// Fetch rig-level agent beads in parallel
-	for _, r := range rigs {
+	if doltReachable {
+		// Fetch town-level agent beads (Mayor, Deacon) from town beads
+		townBeadsPath := beads.GetTownBeadsPath(townRoot)
 		beadsWg.Add(1)
-		go func(r *rig.Rig) {
+		go func() {
 			defer beadsWg.Done()
-			rigBeadsPath := filepath.Join(r.Path, "mayor", "rig")
-			rigBeads := beads.New(rigBeadsPath)
-			rigAgentBeads, _ := rigBeads.ListAgentBeads()
-			if rigAgentBeads == nil {
-				return
-			}
-			mergeAgentBeads(rigAgentBeads)
+			townBeadsClient := beads.New(townBeadsPath)
+			townAgentBeads, _ := townBeadsClient.ListAgentBeads()
+			mergeAgentBeads(townAgentBeads)
 
-			var hookIDs []string
-			for _, issue := range rigAgentBeads {
-				// Use the HookBead field from the database column; fall back for legacy beads.
+			// Fetch hook beads from town beads
+			var townHookIDs []string
+			for _, issue := range townAgentBeads {
 				hookID := issue.HookBead
 				if hookID == "" {
 					fields := beads.ParseAgentFields(issue.Description)
@@ -746,16 +719,50 @@ func gatherStatus() (TownStatus, error) {
 					}
 				}
 				if hookID != "" {
-					hookIDs = append(hookIDs, hookID)
+					townHookIDs = append(townHookIDs, hookID)
 				}
 			}
-
-			if len(hookIDs) == 0 {
-				return
+			if len(townHookIDs) > 0 {
+				townHookBeads, _ := townBeadsClient.ShowMultiple(townHookIDs)
+				mergeHookBeads(townHookBeads)
 			}
-			hookBeads, _ := rigBeads.ShowMultiple(hookIDs)
-			mergeHookBeads(hookBeads)
-		}(r)
+		}()
+
+		// Fetch rig-level agent beads in parallel
+		for _, r := range rigs {
+			beadsWg.Add(1)
+			go func(r *rig.Rig) {
+				defer beadsWg.Done()
+				rigBeadsPath := filepath.Join(r.Path, "mayor", "rig")
+				rigBeads := beads.New(rigBeadsPath)
+				rigAgentBeads, _ := rigBeads.ListAgentBeads()
+				if rigAgentBeads == nil {
+					return
+				}
+				mergeAgentBeads(rigAgentBeads)
+
+				var hookIDs []string
+				for _, issue := range rigAgentBeads {
+					// Use the HookBead field from the database column; fall back for legacy beads.
+					hookID := issue.HookBead
+					if hookID == "" {
+						fields := beads.ParseAgentFields(issue.Description)
+						if fields != nil {
+							hookID = fields.HookBead
+						}
+					}
+					if hookID != "" {
+						hookIDs = append(hookIDs, hookID)
+					}
+				}
+
+				if len(hookIDs) == 0 {
+					return
+				}
+				hookBeads, _ := rigBeads.ShowMultiple(hookIDs)
+				mergeHookBeads(hookBeads)
+			}(r)
+		}
 	}
 
 	beadsWg.Wait()
@@ -798,7 +805,7 @@ func gatherStatus() (TownStatus, error) {
 	// Dolt status
 	doltCfg := doltserver.DefaultConfig(townRoot)
 	if doltCfg.IsRemote() {
-		status.Dolt = &DoltInfo{Remote: true, Port: doltCfg.Port}
+		status.Dolt = &DoltInfo{Remote: true, Port: doltCfg.Port, Reachable: doltReachable}
 	} else {
 		doltRunning, doltPid, _ := doltserver.IsRunning(townRoot)
 		port := doltCfg.Port
@@ -811,10 +818,11 @@ func gatherStatus() (TownStatus, error) {
 			}
 		}
 		doltInfo := &DoltInfo{
-			Running: doltRunning,
-			PID:     doltPid,
-			Port:    port,
-			DataDir: doltCfg.DataDir,
+			Running:   doltRunning,
+			Reachable: doltReachable,
+			PID:       doltPid,
+			Port:      port,
+			DataDir:   doltCfg.DataDir,
 		}
 		// Check if port is held by another town's Dolt
 		if !doltRunning {
@@ -1004,6 +1012,8 @@ func outputStatusText(w io.Writer, status TownStatus) error {
 		if status.Dolt != nil {
 			if status.Dolt.Remote {
 				parts = append(parts, fmt.Sprintf("dolt %s", style.Dim.Render(fmt.Sprintf("(remote :%d)", status.Dolt.Port))))
+			} else if status.Dolt.Running && !status.Dolt.Reachable {
+				parts = append(parts, fmt.Sprintf("dolt %s", style.Bold.Render(fmt.Sprintf("(PID %d, :%d, UNREACHABLE)", status.Dolt.PID, status.Dolt.Port))))
 			} else if status.Dolt.Running {
 				dataDir := status.Dolt.DataDir
 				if home, err := os.UserHomeDir(); err == nil {

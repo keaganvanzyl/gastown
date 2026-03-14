@@ -611,6 +611,16 @@ func (d *Daemon) heartbeat(state *State) {
 	// This must happen before beads operations that depend on Dolt.
 	d.ensureDoltServerRunning()
 
+	// 0c. Check if Dolt is actually healthy (TCP-reachable).
+	// If Dolt is down, skip all beads-dependent steps to prevent the daemon from
+	// hanging on bd calls. Non-beads steps (tmux checks, process cleanup, log rotation)
+	// continue normally. This breaks the deadlock where the daemon hangs on bd calls
+	// and can never restart Dolt. (gs-lcv)
+	doltHealthy := d.isDoltHealthy()
+	if !doltHealthy {
+		d.logger.Println("WARNING: Dolt unreachable, skipping beads-dependent heartbeat steps")
+	}
+
 	// 1. Ensure Deacon is running (restart if dead)
 	// Check patrol config - can be disabled in mayor/daemon.json
 	if IsPatrolEnabled(d.patrolConfig, "deacon") {
@@ -685,10 +695,16 @@ func (d *Daemon) heartbeat(state *State) {
 	// 9. (Removed) Stale agent check - violated "discover, don't track"
 
 	// 10. Check for GUPP violations (agents with work-on-hook not progressing)
-	d.checkGUPPViolations()
+	// Requires beads access to read agent hook state.
+	if doltHealthy {
+		d.checkGUPPViolations()
+	}
 
 	// 11. Check for orphaned work (assigned to dead agents)
-	d.checkOrphanedWork()
+	// Requires beads access to scan for orphaned assignments.
+	if doltHealthy {
+		d.checkOrphanedWork()
+	}
 
 	// 12. Check polecat session health (proactive crash detection)
 	// This validates tmux sessions are still alive for polecats with work-on-hook
@@ -713,7 +729,10 @@ func (d *Daemon) heartbeat(state *State) {
 	// 14. Dispatch scheduled work (capacity-controlled polecat dispatch).
 	// Shells out to `gt scheduler run` to avoid circular import between daemon and cmd.
 	// Pressure-gated: polecats are the primary resource consumers.
-	if p := d.checkPressure("polecat"); !p.OK {
+	// Requires beads access for work queue queries.
+	if !doltHealthy {
+		d.logger.Printf("Deferring polecat dispatch: Dolt unreachable")
+	} else if p := d.checkPressure("polecat"); !p.OK {
 		d.logger.Printf("Deferring polecat dispatch: %s", p.Reason)
 	} else {
 		d.dispatchQueuedWork()
@@ -778,6 +797,18 @@ func (d *Daemon) ensureDoltServerRunning() {
 			h.Healthy,
 		)
 	}
+}
+
+// isDoltHealthy performs a quick TCP dial to the Dolt port to check reachability.
+// Returns true if Dolt is not configured (no server to check) or if the TCP dial succeeds.
+// Returns false if the dial times out or is refused — meaning beads operations will hang.
+// Used by heartbeat() to skip beads-dependent steps when Dolt is down. (gs-lcv)
+func (d *Daemon) isDoltHealthy() bool {
+	if d.doltServer == nil || !d.doltServer.IsEnabled() {
+		return true // No Dolt server configured — beads may use file mode
+	}
+	err := doltserver.CheckServerReachable(d.config.TownRoot)
+	return err == nil
 }
 
 // pourDoctorMolecule creates a mol-dog-doctor molecule to track a health anomaly.
