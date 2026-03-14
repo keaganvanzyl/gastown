@@ -75,34 +75,37 @@ func TestSanitizeDBName(t *testing.T) {
 	}
 }
 
-func TestIsSystemDB(t *testing.T) {
+func TestIsProductionDB(t *testing.T) {
 	tests := []struct {
 		name string
 		want bool
 	}{
-		{"information_schema", true},
-		{"mysql", true},
-		{"dolt_cluster", true},
-		{"testdb_abc", true},
-		{"beads_t123", true},
-		{"beads_pt456", true},
-		{"doctest_xyz", true},
-		{"hq", false},
-		{"petals", false},
-		{"sfgastown", false},
-		{"lora_forge", false},
-		{"node0", false},
+		// Non-production: system databases
+		{"information_schema", false},
+		{"mysql", false},
+		{"dolt_cluster", false},
+		// Non-production: test pollution
+		{"testdb_abc", false},
+		{"beads_t123", false},
+		{"beads_pt456", false},
+		{"doctest_xyz", false},
+		// Production databases
+		{"hq", true},
+		{"petals", true},
+		{"sfgastown", true},
+		{"lora_forge", true},
+		{"node0", true},
 		// Edge cases: names that start with system prefixes but aren't
-		{"testdb", false},        // exactly "testdb" with no underscore
-		{"beads", false},         // exactly "beads"
-		{"beads_production", false}, // doesn't match beads_t or beads_pt
+		{"testdb", true},           // exactly "testdb" with no underscore
+		{"beads", true},            // exactly "beads"
+		{"beads_production", true}, // doesn't match beads_t or beads_pt
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isSystemDB(tt.name)
+			got := isProductionDB(tt.name)
 			if got != tt.want {
-				t.Errorf("isSystemDB(%q) = %v, want %v", tt.name, got, tt.want)
+				t.Errorf("isProductionDB(%q) = %v, want %v", tt.name, got, tt.want)
 			}
 		})
 	}

@@ -2675,6 +2675,34 @@ func TestIsSystemDatabase(t *testing.T) {
 	}
 }
 
+func TestIsProductionDatabase(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		// System databases → not production
+		{"information_schema", false},
+		{"mysql", false},
+		{"dolt_cluster", false},
+		// Test pollution prefixes → not production
+		{"testdb_abc", false},
+		{"beads_t123", false},
+		{"beads_pt456", false},
+		{"doctest_foo", false},
+		// Real production databases → production
+		{"hq", true},
+		{"gastown", true},
+		{"beads", true},
+		{"re", true},
+		{"sky", true},
+	}
+	for _, tt := range tests {
+		if got := IsProductionDatabase(tt.name); got != tt.want {
+			t.Errorf("IsProductionDatabase(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestFindMissingDatabases_NoneServed(t *testing.T) {
 	served := []string{}
 	fs := []string{"hq", "gastown"}

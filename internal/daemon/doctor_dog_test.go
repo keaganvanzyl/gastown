@@ -32,23 +32,19 @@ func TestDoctorDogInterval(t *testing.T) {
 	}
 }
 
-func TestDoctorDogDatabases(t *testing.T) {
-	// Default databases
-	dbs := doctorDogDatabases(nil)
-	if len(dbs) != 6 {
-		t.Errorf("expected 6 default databases, got %d", len(dbs))
-	}
-
-	// Custom databases
-	config := &DaemonPatrolConfig{
-		Patrols: &PatrolsConfig{
-			DoctorDog: &DoctorDogConfig{
-				Enabled:   true,
-				Databases: []string{"hq", "beads"},
+func TestDoctorDogDatabasesFromConfig(t *testing.T) {
+	// Custom databases from config are returned as-is
+	d := &Daemon{
+		patrolConfig: &DaemonPatrolConfig{
+			Patrols: &PatrolsConfig{
+				DoctorDog: &DoctorDogConfig{
+					Enabled:   true,
+					Databases: []string{"hq", "beads"},
+				},
 			},
 		},
 	}
-	dbs = doctorDogDatabases(config)
+	dbs := d.doctorDogDatabases()
 	if len(dbs) != 2 {
 		t.Errorf("expected 2 custom databases, got %d", len(dbs))
 	}

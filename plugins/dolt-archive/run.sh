@@ -16,7 +16,7 @@ DOLT_USER="${DOLT_USER:-root}"
 DOLT_DATA_DIR="${DOLT_DATA_DIR:-$HOME/gt/.dolt-data}"
 JSONL_EXPORT_DIR="$HOME/gt/.dolt-archive/jsonl"
 BACKUP_REPO="$HOME/gt/.dolt-archive/git"
-DEFAULT_DBS="hq,bd,gt"
+DEFAULT_DBS="auto"
 SKIP_GIT=false
 SKIP_DOLT_PUSH=false
 
@@ -63,6 +63,17 @@ dolt_query_json() {
 }
 
 # --- Step 1: JSONL export ----------------------------------------------------
+
+# Auto-discover databases from the Dolt server if DEFAULT_DBS is "auto".
+if [[ "$DEFAULT_DBS" == "auto" ]]; then
+  AUTO_DBS=$(dolt_query "" "SHOW DATABASES" | grep -v -E '^(information_schema|mysql|dolt_cluster|testdb_|beads_t|beads_pt|doctest_)$')
+  if [[ -z "$AUTO_DBS" ]]; then
+    log "ERROR: No production databases found (is Dolt running on $DOLT_HOST:$DOLT_PORT?)"
+    exit 1
+  fi
+  # Convert newline-separated to comma-separated for IFS splitting below.
+  DEFAULT_DBS=$(echo "$AUTO_DBS" | tr '\n' ',' | sed 's/,$//')
+fi
 
 IFS=',' read -ra PROD_DBS <<< "$DEFAULT_DBS"
 

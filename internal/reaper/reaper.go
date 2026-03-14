@@ -16,16 +16,11 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/steveyegge/gastown/internal/doltserver"
 )
 
 // validDBName matches safe database names (alphanumeric + underscore only).
 var validDBName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
-
-// DefaultDatabases is the static fallback list of known production databases.
-var DefaultDatabases = []string{"hq", "bd", "gt"}
-
-// testPollutionPrefixes are database name prefixes created by tests.
-var testPollutionPrefixes = []string{"testdb_", "beads_t", "beads_pt", "doctest_"}
 
 // isNothingToCommit returns true if the error is a Dolt "nothing to commit" error.
 func isNothingToCommit(err error) bool {
@@ -46,51 +41,14 @@ func isTableNotFound(err error) bool {
 
 // DiscoverDatabases queries SHOW DATABASES on the Dolt server and returns
 // all production databases, filtering out system databases and test pollution.
-// Falls back to DefaultDatabases on any error.
+// Delegates to doltserver.DiscoverProductionDatabases. Returns nil on error —
+// callers should handle empty results appropriately.
 func DiscoverDatabases(host string, port int) []string {
-	dsn := fmt.Sprintf("root@tcp(%s:%d)/?parseTime=true&timeout=5s", host, port)
-	db, err := sql.Open("mysql", dsn)
+	dbs, err := doltserver.DiscoverProductionDatabases(host, port)
 	if err != nil {
-		return DefaultDatabases
+		return nil
 	}
-	defer db.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	rows, err := db.QueryContext(ctx, "SHOW DATABASES")
-	if err != nil {
-		return DefaultDatabases
-	}
-	defer rows.Close()
-
-	var databases []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			continue
-		}
-		if name == "information_schema" || name == "mysql" {
-			continue
-		}
-		lower := strings.ToLower(name)
-		skip := false
-		for _, prefix := range testPollutionPrefixes {
-			if strings.HasPrefix(lower, prefix) {
-				skip = true
-				break
-			}
-		}
-		if skip {
-			continue
-		}
-		databases = append(databases, name)
-	}
-
-	if len(databases) == 0 {
-		return DefaultDatabases
-	}
-	return databases
+	return dbs
 }
 
 // ScanResult holds the results of scanning a database for reaper candidates.

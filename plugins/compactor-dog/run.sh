@@ -23,8 +23,8 @@ DOLT_HOST="${DOLT_HOST:-127.0.0.1}"
 DOLT_PORT="${DOLT_PORT:-3307}"
 DOLT_USER="${DOLT_USER:-root}"
 COMMIT_THRESHOLD="${COMMIT_THRESHOLD:-500}"
-# Default production databases (matches reaper.DefaultDatabases)
-DEFAULT_DBS="hq,bd,gt"
+# Default: auto-discover production databases from the running Dolt server.
+DEFAULT_DBS="auto"
 DRY_RUN=false
 CHECK_ONLY=false
 LOGFILE=""

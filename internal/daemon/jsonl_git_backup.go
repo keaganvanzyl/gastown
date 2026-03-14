@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/doltserver"
 )
 
 const (
@@ -111,11 +112,16 @@ func (d *Daemon) syncJsonlGitBackup() {
 		scrub = *config.Scrub
 	}
 
-	// Get database list.
+	// Get database list — use config if set, otherwise discover dynamically.
 	databases := config.Databases
 	if len(databases) == 0 {
-		d.logger.Printf("jsonl_git_backup: no databases configured, skipping")
-		return
+		discovered, err := doltserver.DiscoverProductionDatabases("127.0.0.1", d.doltServerPort())
+		if err != nil || len(discovered) == 0 {
+			d.logger.Printf("jsonl_git_backup: no databases configured and discovery failed, skipping")
+			return
+		}
+		databases = discovered
+		d.logger.Printf("jsonl_git_backup: discovered %d database(s): %v", len(databases), databases)
 	}
 
 	// Resolve Dolt data dir for auto-discovery of running server.

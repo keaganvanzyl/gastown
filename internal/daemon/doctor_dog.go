@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/doltserver"
 )
 
 // Operational constants — timeouts needed to perform checks.
@@ -80,13 +81,19 @@ func doctorDogInterval(config *DaemonPatrolConfig) time.Duration {
 }
 
 // doctorDogDatabases returns the list of production databases for health checks.
-func doctorDogDatabases(config *DaemonPatrolConfig) []string {
-	if config != nil && config.Patrols != nil && config.Patrols.DoctorDog != nil {
-		if len(config.Patrols.DoctorDog.Databases) > 0 {
-			return config.Patrols.DoctorDog.Databases
+// Falls back to dynamic discovery if no databases are configured.
+func (d *Daemon) doctorDogDatabases() []string {
+	if d.patrolConfig != nil && d.patrolConfig.Patrols != nil && d.patrolConfig.Patrols.DoctorDog != nil {
+		if len(d.patrolConfig.Patrols.DoctorDog.Databases) > 0 {
+			return d.patrolConfig.Patrols.DoctorDog.Databases
 		}
 	}
-	return []string{"hq", "bd", "gt", "sky", "wy", "beads_hop"}
+	dbs, err := doltserver.DiscoverProductionDatabases("127.0.0.1", d.doltServerPort())
+	if err != nil {
+		d.logger.Printf("doctor_dog: database discovery failed: %v", err)
+		return nil
+	}
+	return dbs
 }
 
 // runDoctorDog pours a mol-dog-doctor molecule for agent execution.

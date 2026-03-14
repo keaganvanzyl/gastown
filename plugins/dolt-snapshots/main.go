@@ -142,7 +142,9 @@ func resolveRoutesFile(flag string) string {
 	return filepath.Join(home, "gt", ".beads", "routes.jsonl")
 }
 
-// listDatabases returns all non-system databases on the Dolt server.
+// listDatabases returns all production databases on the Dolt server.
+// Filtering logic mirrors doltserver.IsProductionDatabase — if you update
+// the filter list there, update it here too.
 func listDatabases(db *sql.DB) ([]string, error) {
 	rows, err := db.Query("SHOW DATABASES")
 	if err != nil {
@@ -156,8 +158,7 @@ func listDatabases(db *sql.DB) ([]string, error) {
 		if err := rows.Scan(&name); err != nil {
 			return nil, err
 		}
-		// Skip system databases and test pollution
-		if isSystemDB(name) {
+		if !isProductionDB(name) {
 			continue
 		}
 		databases = append(databases, name)
@@ -165,17 +166,19 @@ func listDatabases(db *sql.DB) ([]string, error) {
 	return databases, rows.Err()
 }
 
-func isSystemDB(name string) bool {
+// isProductionDB returns true if the database is a real production database.
+// Mirrors doltserver.IsProductionDatabase (separate module, can't import directly).
+func isProductionDB(name string) bool {
 	switch name {
 	case "information_schema", "mysql", "dolt_cluster":
-		return true
+		return false
 	}
 	for _, prefix := range []string{"testdb_", "beads_t", "beads_pt", "doctest_"} {
 		if strings.HasPrefix(name, prefix) {
-			return true
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // loadRoutes parses routes.jsonl and returns prefix → database name mapping.

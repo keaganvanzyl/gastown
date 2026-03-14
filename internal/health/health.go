@@ -51,36 +51,13 @@ func LatencyCheck(host string, port int, timeout time.Duration) (time.Duration, 
 	return time.Since(start), nil
 }
 
-// DatabaseCount runs SHOW DATABASES and returns the count (excluding system databases).
+// DatabaseCount runs SHOW DATABASES and returns the count of production databases,
+// filtering via doltserver.IsProductionDatabase (excludes system DBs and test pollution).
 func DatabaseCount(host string, port int) (int, []string, error) {
-	dsn := fmt.Sprintf("root@tcp(%s:%d)/?timeout=5s&readTimeout=10s", host, port)
-	db, err := sql.Open("mysql", dsn)
+	databases, err := doltserver.DiscoverProductionDatabases(host, port)
 	if err != nil {
 		return 0, nil, err
 	}
-	defer db.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rows, err := db.QueryContext(ctx, "SHOW DATABASES")
-	if err != nil {
-		return 0, nil, err
-	}
-	defer rows.Close()
-
-	var databases []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			continue
-		}
-		if name == "information_schema" || name == "mysql" {
-			continue
-		}
-		databases = append(databases, name)
-	}
-
 	return len(databases), databases, nil
 }
 

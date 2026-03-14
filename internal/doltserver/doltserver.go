@@ -1823,6 +1823,61 @@ func IsSystemDatabase(name string) bool {
 	return systemDatabases[strings.ToLower(name)]
 }
 
+// testPollutionPrefixes are database name prefixes created by tests.
+// Databases with these prefixes are excluded from production discovery.
+var testPollutionPrefixes = []string{"testdb_", "beads_t", "beads_pt", "doctest_"}
+
+// IsProductionDatabase returns true if the given database name is a real
+// production database — not a system database and not test pollution.
+// This is the single source of truth for filtering SHOW DATABASES results.
+func IsProductionDatabase(name string) bool {
+	if IsSystemDatabase(name) {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, prefix := range testPollutionPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// DiscoverProductionDatabases queries SHOW DATABASES on the Dolt server and
+// returns all production databases, filtering out system databases and test
+// pollution via IsProductionDatabase. Returns an error on connection or query
+// failure — callers decide their own fallback strategy.
+func DiscoverProductionDatabases(host string, port int) ([]string, error) {
+	dsn := fmt.Sprintf("root@tcp(%s:%d)/?parseTime=true&timeout=5s", host, port)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open connection: %w", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, "SHOW DATABASES")
+	if err != nil {
+		return nil, fmt.Errorf("SHOW DATABASES: %w", err)
+	}
+	defer rows.Close()
+
+	var databases []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		if IsProductionDatabase(name) {
+			databases = append(databases, name)
+		}
+	}
+
+	return databases, nil
+}
+
 // parseShowDatabases parses the output of SHOW DATABASES from dolt sql.
 // It tries JSON parsing first, falling back to line-based parsing for
 // plain-text output. Returns an error if the output format is unrecognized.
