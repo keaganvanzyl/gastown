@@ -24,6 +24,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/steveyegge/gastown/internal/doltserver"
 )
 
 var (
@@ -156,26 +157,11 @@ func listDatabases(db *sql.DB) ([]string, error) {
 		if err := rows.Scan(&name); err != nil {
 			return nil, err
 		}
-		// Skip system databases and test pollution
-		if isSystemDB(name) {
-			continue
+		if doltserver.IsProductionDatabase(name) {
+			databases = append(databases, name)
 		}
-		databases = append(databases, name)
 	}
 	return databases, rows.Err()
-}
-
-func isSystemDB(name string) bool {
-	switch name {
-	case "information_schema", "mysql", "dolt_cluster":
-		return true
-	}
-	for _, prefix := range []string{"testdb_", "beads_t", "beads_pt", "doctest_"} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // loadRoutes parses routes.jsonl and returns prefix → database name mapping.

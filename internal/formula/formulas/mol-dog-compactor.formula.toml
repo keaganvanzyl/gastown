@@ -69,7 +69,7 @@ description = """
 Check each production database's commit count against the threshold.
 
 **Database discovery:** Checks compactor config first, falls back to wisp_reaper
-config, then auto-discovery via reaper.DefaultDatabases.
+config, then dynamic discovery via doltserver.DiscoverProductionDatabases.
 
 **For each database:**
 ```sql

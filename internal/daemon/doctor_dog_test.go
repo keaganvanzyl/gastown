@@ -33,13 +33,13 @@ func TestDoctorDogInterval(t *testing.T) {
 }
 
 func TestDoctorDogDatabases(t *testing.T) {
-	// Default databases
-	dbs := doctorDogDatabases(nil)
-	if len(dbs) != 6 {
-		t.Errorf("expected 6 default databases, got %d", len(dbs))
+	// No config, no server: returns nil (dynamic discovery fails gracefully)
+	dbs := doctorDogDatabases(nil, "127.0.0.1", 0)
+	if dbs != nil {
+		t.Errorf("expected nil databases with no config and no server, got %v", dbs)
 	}
 
-	// Custom databases
+	// Custom databases from config
 	config := &DaemonPatrolConfig{
 		Patrols: &PatrolsConfig{
 			DoctorDog: &DoctorDogConfig{
@@ -48,7 +48,7 @@ func TestDoctorDogDatabases(t *testing.T) {
 			},
 		},
 	}
-	dbs = doctorDogDatabases(config)
+	dbs = doctorDogDatabases(config, "127.0.0.1", 0)
 	if len(dbs) != 2 {
 		t.Errorf("expected 2 custom databases, got %d", len(dbs))
 	}
