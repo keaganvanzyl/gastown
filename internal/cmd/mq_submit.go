@@ -276,7 +276,7 @@ func runMqSubmit(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Supersede older open MRs for the same source issue.
+		// GH#gt-tt37: Supersede older open MRs for the same source issue.
 		// When a new polecat reattempts an issue, the old MR (different branch)
 		// is orphaned. Close it so the queue and GitHub PRs stay clean.
 		if issueID != "" {

@@ -67,7 +67,7 @@ dolt_query_json() {
 
 if [[ "$DEFAULT_DBS" == "auto" ]]; then
   log "Auto-discovering databases from Dolt server..."
-  DISCOVERED=$(dolt_query "" "SHOW DATABASES" | grep -vE '^(information_schema|mysql|dolt)$')
+  DISCOVERED=$(dolt_query "" "SHOW DATABASES" | grep -vE '^(information_schema|mysql|dolt|dolt_cluster)$' | grep -vE '^(testdb_|beads_t|beads_pt|doctest_)')
   if [[ -z "$DISCOVERED" ]]; then
     log "ERROR: No user databases found on Dolt server at $DOLT_HOST:$DOLT_PORT"
     exit 1
@@ -80,8 +80,6 @@ if [[ "$DEFAULT_DBS" == "auto" ]]; then
 else
   IFS=',' read -ra PROD_DBS <<< "$DEFAULT_DBS"
 fi
-
-# --- Step 2: JSONL export ----------------------------------------------------
 
 log "Starting archive cycle (databases: ${PROD_DBS[*]})"
 mkdir -p "$JSONL_EXPORT_DIR"

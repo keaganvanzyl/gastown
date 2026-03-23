@@ -1244,6 +1244,10 @@ type MergeQueueConfig struct {
 	// TypecheckCommand is the command to run for type checking (e.g., tsc --noEmit).
 	TypecheckCommand string `json:"typecheck_command,omitempty"`
 
+	// PostMergeCommand is a command to run after successful merge+push
+	// (e.g., database migrations, deploys). Empty = skip.
+	PostMergeCommand string `json:"post_merge_command,omitempty"`
+
 	// DeleteMergedBranches controls whether to delete branches after merging.
 	// Nil defaults to true (merged branches are deleted).
 	DeleteMergedBranches *bool `json:"delete_merged_branches,omitempty"`
