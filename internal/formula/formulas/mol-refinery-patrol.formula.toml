@@ -57,10 +57,12 @@ source of truth.
 | lint_command | (empty) | Lint command (e.g., `eslint .`). Empty = skip. |
 | test_command | go test ./... | Test command to run (if run_tests is true) |
 | build_command | (empty) | Build command (e.g., `go build ./...`). Empty = skip. |
+| post_merge_command | (empty) | Post-merge command (e.g., `npx supabase db push`). Empty = skip. |
 | target_branch | main | Default target branch for merges |
 | delete_merged_branches | true | Whether to delete source branches after merge |
-| judgment_enabled | false | Enable quality review for merges (true/false) |
+| judgment_enabled | true | Enable quality review for merges (true/false) |
 | review_depth | standard | Review depth: quick, standard, or deep |
+| review_command | ~/gt/bin/opencode run | External review tool command. Empty = self-review. |
 
 ## Target Resolution Rule
 
@@ -81,7 +83,7 @@ resolve that placeholder with this rule:
 You MUST process steps in strict DAG order. Walk through each step sequentially,
 unless you are explicitly told to skip to a step."""
 formula = "mol-refinery-patrol"
-version = 9
+version = 13
 
 [vars]
 [vars.wisp_type]
@@ -120,6 +122,10 @@ default = "go test ./..."
 description = "Build command (e.g., go build ./...). Empty = skip."
 default = ""
 
+[vars.post_merge_command]
+description = "Command to run after successful merge+push (e.g., db migrations, deploys). Empty = skip."
+default = ""
+
 [vars.target_branch]
 description = "Default target branch for merges"
 default = "main"
@@ -130,11 +136,15 @@ default = "true"
 
 [vars.judgment_enabled]
 description = "Enable quality review for merges (true/false)"
-default = "false"
+default = "true"
 
 [vars.review_depth]
 description = "Review depth: quick, standard, or deep"
 default = "standard"
+
+[vars.review_command]
+description = "External review tool command. Receives a prompt with the diff. Empty = self-review (Claude). Default: opencode (GPT-5.4-pro)."
+default = "~/gt/bin/opencode run"
 
 [[steps]]
 id = "inbox-check"
@@ -365,70 +375,140 @@ needs = ["run-tests"]
 description = """
 **Config: judgment_enabled = {{judgment_enabled}}**
 **Config: review_depth = {{review_depth}}**
+**Config: review_command = {{review_command}}**
 
-Review the merge diff for quality issues. This step is measurement-only (Phase 1):
-reviews are recorded but do NOT gate merges.
+## FORBIDDEN
+
+**FORBIDDEN: Reviewing the diff yourself when review_command is non-empty.**
+You are NOT the reviewer. You are a MECHANICAL OPERATOR that calls an external tool.
+When review_command = "~/gt/bin/opencode run", you MUST execute that command via Bash.
+Do NOT read the diff. Do NOT assess the code. Do NOT produce a score from your own judgment.
+The external tool (GPT-5.4-pro) produces the score. You just parse its output.
+
+Violating this is equivalent to a polecat writing its own tests — it defeats the purpose
+of independent review. Two different AI models MUST be involved: you merge, GPT reviews.
+
+---
+
+This step GATES merges: branches that fail review are REJECTED and sent back for rework.
 
 **Step 1: Check if quality review is enabled**
 
 If judgment_enabled is not "true", skip this step entirely and proceed to
 handle-failures. Log: "Quality review skipped (judgment_enabled=false)"
 
-**Step 2: Get the merge diff**
+**Step 2: Get the merge diff and write to temp file**
 
+Run this EXACT bash block:
 ```bash
-git diff origin/main...temp
+DIFF_FILE=$(mktemp /tmp/refinery-review-XXXXXX.diff)
+git diff origin/main...temp > "$DIFF_FILE"
+DIFF_LINES=$(wc -l < "$DIFF_FILE" | tr -d ' ')
+echo "Diff: $DIFF_LINES lines written to $DIFF_FILE"
 ```
 
-If the diff is empty, skip with: "No diff to review"
+If DIFF_LINES is 0, skip with: "No diff to review". Clean up: `rm -f "$DIFF_FILE"`
 
-**Step 3: Review the diff**
+**Step 3: Build review prompt file and call external tool**
 
-Review the diff yourself using your judgment. Assess:
-
-1. **Correctness**: Logic errors, off-by-one, nil/null handling, race conditions
-2. **Security**: Injection, auth bypass, secrets in code, unsafe deserialization
-3. **Clarity**: Naming, structure, comments where non-obvious
-4. **Style**: Consistency with surrounding code, idiomatic patterns
-
-Depth is controlled by review_depth:
-- `quick`: Focus on correctness and security only. Skim for obvious issues.
-- `standard`: All four categories. Moderate detail.
-- `deep`: Thorough line-by-line review. Flag even minor style issues.
-
-**Step 4: Score and recommend**
-
-Assign a score from 0.0 to 1.0:
-- 0.9-1.0: Excellent — no issues or only trivial nits
-- 0.7-0.89: Good — minor issues only
-- 0.45-0.69: Needs work — significant issues found
-- 0.0-0.44: Breach — critical issues (security, correctness)
-
-Recommendation:
-- `approve`: Score >= 0.45
-- `request_changes`: Score < 0.45
-
-**Step 5: Record the result as a wisp**
-
-Record the quality review result. This is fail-open: if the command fails,
-log the error and continue — never block the merge.
+Run this EXACT bash block. Do NOT modify it. Do NOT skip it. Do NOT substitute
+your own review for the external tool output.
 
 ```bash
-bd create "quality-review: Score <score>, <recommendation>" -t chore --ephemeral \\
-  -l type:plugin-run,plugin:quality-review-result,worker:<polecat-name>,rig:<rig-name>,score:<score>,recommendation:<approve|request_changes>,result:success \\
-  -d "Score: <score>, <recommendation>. Issues: <count> (<summary>)" \\
+PROMPT_FILE=$(mktemp /tmp/refinery-prompt-XXXXXX.txt)
+cat > "$PROMPT_FILE" << 'REVIEW_INSTRUCTIONS'
+You are an independent code reviewer (GPT-5.4-pro). Review this merge diff.
+
+Assess these categories:
+1. Correctness: Logic errors, off-by-one, nil/null handling, race conditions
+2. Security: Injection, auth bypass, secrets in code, unsafe deserialization
+3. Clarity: Naming, structure, comments where non-obvious
+4. Style: Consistency with surrounding code, idiomatic patterns
+
+Review depth: {{review_depth}}
+- quick: Focus on correctness and security only
+- standard: All four categories, moderate detail
+- deep: Thorough line-by-line review
+
+IMPORTANT: End your review with these EXACT lines (parseable by automation):
+SCORE: <number between 0.0 and 1.0>
+RECOMMENDATION: <approve or request_changes>
+ISSUES: <integer count of issues found>
+SUMMARY: <one sentence summary>
+
+The diff follows:
+REVIEW_INSTRUCTIONS
+cat "$DIFF_FILE" >> "$PROMPT_FILE"
+echo "Prompt file ready: $(wc -l < "$PROMPT_FILE") lines"
+```
+
+Now call the external review tool. This is the critical step — you MUST run this:
+
+```bash
+REVIEW_OUTPUT=$({{review_command}} "$(cat "$PROMPT_FILE")" 2>&1) || REVIEW_EXIT=$?
+rm -f "$PROMPT_FILE" "$DIFF_FILE"
+echo "--- REVIEW OUTPUT START ---"
+echo "$REVIEW_OUTPUT"
+echo "--- REVIEW OUTPUT END ---"
+echo "Exit code: ${REVIEW_EXIT:-0}"
+```
+
+**VERIFICATION**: After running the above, your bash output MUST contain
+"--- REVIEW OUTPUT START ---". If it does not, you did not run the command.
+STOP and run it now.
+
+**Step 4: Parse external tool output**
+
+Parse REVIEW_OUTPUT for structured fields. Look for lines starting with:
+- `SCORE:` → extract numeric score (e.g., 0.85)
+- `RECOMMENDATION:` → extract approve/request_changes
+- `ISSUES:` → extract integer count
+- `SUMMARY:` → extract summary text
+
+**Fail-open rules:**
+- If review_command crashed (non-zero exit AND no SCORE in output): log error,
+  set score=0.75, recommendation=approve, proceed with merge. External tool
+  failure does not block merges.
+- If review_command succeeded but output is not parseable (no SCORE line):
+  set score=0.75, recommendation=approve. Log: "Review output not parseable"
+- If review_command returned a valid SCORE: USE THAT SCORE. Do not override it.
+
+**Self-review fallback**: ONLY if review_command is empty (not configured).
+If review_command is "~/gt/bin/opencode run" or any non-empty value, you MUST
+use the external tool. Self-review with a non-empty review_command is FORBIDDEN.
+
+**Step 5: Apply score thresholds**
+
+- 0.9-1.0: Excellent — ship it
+- 0.7-0.89: Good — approve with notes
+- 0.0-0.69: REJECT — not good enough, send back for rework
+
+**Step 6: Record the result as a wisp**
+
+```bash
+REVIEWER="external:opencode"  # or "self:claude" ONLY if review_command was empty
+bd create "quality-review: Score <score>, <recommendation> (${REVIEWER})" -t chore --ephemeral \\
+  -l type:plugin-run,plugin:quality-review-result,worker:<polecat-name>,rig:<rig-name>,score:<score>,recommendation:<approve|request_changes>,reviewer:${REVIEWER},result:success \\
+  -d "Score: <score>, <recommendation>. Issues: <count> (<summary>). Reviewer: ${REVIEWER}" \\
   --silent 2>/dev/null || true
 ```
 
-**Step 6: Handle breach scores (measurement-only)**
+**Step 7: Handle rejected reviews (GATE)**
 
-If score < 0.45 (breach threshold):
-- Add a note to your merge summary: "Warning: Quality review breach (score: X.XX)"
-- List the critical/major issues found
-- Do NOT block the merge — Phase 1 is measurement-only
-- Proceed to handle-failures normally
+If score < 0.7 (reject threshold):
+- **BLOCK THE MERGE.** Do NOT proceed to merge-push.
+- Record the review issues in the rejection reason
+- Treat this EXACTLY like a test failure in handle-failures:
+  - Reopen the source issue
+  - Send MERGE_FAILED to witness with FailureType: quality-review
+  - Close the MR bead as rejected with the review summary
+  - Delete the rejected branch
+  - Archive the MERGE_READY message
+  - Skip to loop-check
 
-Track: review score, recommendation, issue count, duration."""
+If score >= 0.7: Proceed to handle-failures normally (merge continues).
+
+Track: review score, recommendation, issue count, duration, reviewer tool used."""
 
 [[steps]]
 id = "handle-failures"
@@ -585,9 +665,63 @@ If you skipped notifications or archiving, GO BACK AND DO THEM NOW.
 Target branch has moved. Any remaining branches need rebasing on new baseline."""
 
 [[steps]]
+id = "post-merge-deploy"
+title = "Run post-merge deploy command"
+needs = ["merge-push"]
+description = """
+**Config: post_merge_command = {{post_merge_command}}**
+
+If post_merge_command is empty, skip this step entirely.
+
+If set, run the configured command after a successful merge+push. This is for
+deploy-like operations that should happen automatically (e.g., database migrations,
+Edge Function deploys, static site rebuilds).
+
+```bash
+{{post_merge_command}}
+```
+
+**Failure handling:**
+
+Post-merge deploys are **fail-open** — the merge has already landed on the target
+branch. If the command fails:
+
+1. Log the full error output
+2. File a bead for the failure:
+```bash
+bd create --type=bug --priority=0 \
+  --title="Post-merge deploy failed: <short error>" \
+  --description="## Deploy failure after merge
+
+Branch: <branch>
+Issue: <issue-id>
+Target: <merge-target>
+Command: {{post_merge_command}}
+
+Error output:
+<full error output>
+
+The merge succeeded but the deploy command failed. This needs manual intervention."
+```
+3. Send DEPLOY_FAILED mail to Mayor:
+```bash
+gt mail send mayor -s "DEPLOY_FAILED after merge" -m "Branch: <branch>
+Issue: <issue-id>
+Command: {{post_merge_command}}
+Error: <short error description>
+Bead: <filed-bead-id>
+
+Merge succeeded, deploy failed. Manual intervention needed."
+```
+4. **Continue processing** — do NOT block the merge queue for deploy failures.
+
+**IMPORTANT**: This runs AFTER MERGED notification and post-merge cleanup.
+The merge lifecycle is complete regardless of deploy outcome."""
+
+[[steps]]
 id = "loop-check"
 title = "Check for more work"
-needs = ["merge-push"]
+needs = ["post-merge-deploy"]
 description = """
 More branches to process?
 
